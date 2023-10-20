@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"unicode"
 )
 
 type TokenizerFlag uint8
@@ -57,11 +58,14 @@ type Tokenizer struct {
 	tokens          []Token
 	flag            TokenizerFlag
 	lastChar        byte
+	inQuotes        bool
+	lastQuote       byte
 }
 
 type Token struct {
 	tokenBlock      []byte
 	tokenType       TokenType
+	tokenTag        string
 	tokenAttributes []string
 }
 
@@ -100,7 +104,7 @@ func (t *Tokenizer) Read() {
 		}
 		switch char[0] {
 		case '<':
-			if t.flag == TokenizerFlagInlineText {
+			if t.flag == TokenizerFlagInlineText && !t.inQuotes {
 				t.insertToken()
 			}
 			if t.flag == TokenizerFlagDefault {
@@ -127,7 +131,25 @@ func (t *Tokenizer) Read() {
 				t.flag = TokenizerFlagSelfClosing
 			}
 			t.currentTagBlock = append(t.currentTagBlock, char[0])
-			t.insertToken()
+			if !t.inQuotes {
+				t.insertToken()
+			}
+		case '\'':
+			if t.lastChar == '=' && !t.inQuotes {
+				t.inQuotes = true
+			} else if t.inQuotes && t.lastQuote == '\'' {
+				t.inQuotes = false
+			}
+			t.currentTagBlock = append(t.currentTagBlock, char[0])
+			t.lastQuote = '\''
+		case '"':
+			if t.lastChar == '=' && !t.inQuotes {
+				t.inQuotes = true
+			} else if t.inQuotes && t.lastQuote == '"' {
+				t.inQuotes = false
+			}
+			t.currentTagBlock = append(t.currentTagBlock, char[0])
+			t.lastQuote = '"'
 		default:
 			if t.flag == TokenizerFlagDefault && t.lastChar == '>' && char[0] != '\n' {
 				t.flag = TokenizerFlagInlineText
@@ -139,7 +161,15 @@ func (t *Tokenizer) Read() {
 		t.lastChar = char[0]
 	}
 	for i, token := range t.tokens {
-		fmt.Printf("%5d - (%s): %s\t%v\n", i, token.tokenType, string(token.tokenBlock), token.tokenAttributes)
+		fmt.Printf("%5d - (%s): %s\n", i, token.tokenType, string(token.tokenBlock))
+		if token.tokenType != TokenTypeInlineText {
+			fmt.Printf("(Tag): %s\n", token.tokenTag)
+		}
+		if len(token.tokenAttributes) != 0 {
+			for ii, attribute := range token.tokenAttributes {
+				fmt.Printf(" %d - (%s): %s\n", ii, "Attribute", attribute)
+			}
+		}
 	}
 }
 
@@ -149,15 +179,48 @@ func (t *Tokenizer) insertToken() {
 		tokenType:  getTokenTypeFromFlag(t.flag),
 	}
 	if t.flag != TokenizerFlagInlineText {
-		attributes := strings.Split(string(t.currentTagBlock), " ")[1:]
-		if len(attributes) != 0 {
-			if attributes[len(attributes)-1][len(attributes[len(attributes)-1])-1] == '>' {
-				attributes[len(attributes)-1] = attributes[len(attributes)-1][:len(attributes[len(attributes)-1])-1]
-			}
-			token.tokenAttributes = attributes
+		tag, attributes, hasAttributes := strings.Cut(string(t.currentTagBlock), " ")
+		if !hasAttributes {
+			tag = strings.ReplaceAll(tag, "<", "")
+			tag = strings.ReplaceAll(tag, "/", "")
+			tag = strings.ReplaceAll(tag, ">", "")
+			token.tokenTag = tag
+		} else {
+			tag = strings.ReplaceAll(tag, "<", "")
+			token.tokenTag = tag
+			token.tokenAttributes = fetchAttributes(attributes)
 		}
 	}
 	t.tokens = append(t.tokens, token)
 	t.currentTagBlock = []byte{}
 	t.flag = TokenizerFlagDefault
+}
+
+func fetchAttributes(attributes string) []string {
+	var lastQuote byte
+	var inQuotes bool
+	var lastChar rune
+	output := []string{}
+	var attribute strings.Builder
+	for _, char := range attributes {
+		if unicode.IsSpace(char) {
+			continue
+		}
+		attribute.WriteRune(char)
+		if char == '>' {
+			break
+		} else if char == '"' && lastChar == '=' && !inQuotes {
+			inQuotes = true
+			lastQuote = '"'
+		} else if char == '\'' && lastChar == '=' && !inQuotes {
+			inQuotes = true
+			lastQuote = '\''
+		} else if inQuotes && (char == '"' && lastQuote == '"') || (char == '\'' && lastQuote == '\'') {
+			inQuotes = false
+			output = append(output, attribute.String())
+			attribute.Reset()
+		}
+		lastChar = char
+	}
+	return output
 }
