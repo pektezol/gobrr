@@ -3,6 +3,7 @@ package html
 import (
 	"fmt"
 	"io"
+	"strings"
 )
 
 type TokenizerFlag uint8
@@ -59,8 +60,9 @@ type Tokenizer struct {
 }
 
 type Token struct {
-	tokenBlock []byte
-	tokenType  TokenType
+	tokenBlock      []byte
+	tokenType       TokenType
+	tokenAttributes []string
 }
 
 func NewLexer(stream io.Reader) *Tokenizer {
@@ -99,12 +101,7 @@ func (t *Tokenizer) Read() {
 		switch char[0] {
 		case '<':
 			if t.flag == TokenizerFlagInlineText {
-				t.tokens = append(t.tokens, Token{
-					tokenBlock: t.currentTagBlock,
-					tokenType:  getTokenTypeFromFlag(t.flag),
-				})
-				t.currentTagBlock = []byte{}
-				t.flag = TokenizerFlagDefault
+				t.insertToken()
 			}
 			if t.flag == TokenizerFlagDefault {
 				t.flag = TokenizerFlagOpening
@@ -130,12 +127,7 @@ func (t *Tokenizer) Read() {
 				t.flag = TokenizerFlagSelfClosing
 			}
 			t.currentTagBlock = append(t.currentTagBlock, char[0])
-			t.tokens = append(t.tokens, Token{
-				tokenBlock: t.currentTagBlock,
-				tokenType:  getTokenTypeFromFlag(t.flag),
-			})
-			t.currentTagBlock = []byte{}
-			t.flag = TokenizerFlagDefault
+			t.insertToken()
 		default:
 			if t.flag == TokenizerFlagDefault && t.lastChar == '>' && char[0] != '\n' {
 				t.flag = TokenizerFlagInlineText
@@ -147,6 +139,25 @@ func (t *Tokenizer) Read() {
 		t.lastChar = char[0]
 	}
 	for i, token := range t.tokens {
-		fmt.Printf("%5d - (%s): %s\n", i, token.tokenType, string(token.tokenBlock))
+		fmt.Printf("%5d - (%s): %s\t%v\n", i, token.tokenType, string(token.tokenBlock), token.tokenAttributes)
 	}
+}
+
+func (t *Tokenizer) insertToken() {
+	token := Token{
+		tokenBlock: t.currentTagBlock,
+		tokenType:  getTokenTypeFromFlag(t.flag),
+	}
+	if t.flag != TokenizerFlagInlineText {
+		attributes := strings.Split(string(t.currentTagBlock), " ")[1:]
+		if len(attributes) != 0 {
+			if attributes[len(attributes)-1][len(attributes[len(attributes)-1])-1] == '>' {
+				attributes[len(attributes)-1] = attributes[len(attributes)-1][:len(attributes[len(attributes)-1])-1]
+			}
+			token.tokenAttributes = attributes
+		}
+	}
+	t.tokens = append(t.tokens, token)
+	t.currentTagBlock = []byte{}
+	t.flag = TokenizerFlagDefault
 }
