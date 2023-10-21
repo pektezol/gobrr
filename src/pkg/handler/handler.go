@@ -18,7 +18,7 @@ func Handler() {
 	// 	log.Fatalln("HTTP request failed with status code:", resp.StatusCode)
 	// 	return
 	// }
-	file, _ := os.Open("test/html/test_cbracco.html")
+	file, _ := os.Open("test/html/test_viethung.html")
 	tokenizer := html.NewLexer(file)
 	tokenizer.Read()
 }

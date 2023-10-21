@@ -19,6 +19,8 @@ const (
 	TokenTypeOpening
 	TokenTypeClosing
 	TokenTypeSelfClosing
+	TokenTypeStyle
+	TokenTypeScript
 )
 
 func (tokenType TokenType) String() string {
@@ -37,6 +39,10 @@ func (tokenType TokenType) String() string {
 		return "Closing"
 	case TokenTypeSelfClosing:
 		return "SelfClosing"
+	case TokenTypeStyle:
+		return "Style"
+	case TokenTypeScript:
+		return "Script"
 	default:
 		return fmt.Sprintf("%d", tokenType)
 	}
@@ -50,6 +56,8 @@ const (
 	TokenizerFlagOpening
 	TokenizerFlagClosing
 	TokenizerFlagSelfClosing
+	TokenizerFlagStyle
+	TokenizerFlagScript
 )
 
 type Tokenizer struct {
@@ -63,7 +71,7 @@ type Tokenizer struct {
 }
 
 type Token struct {
-	tokenBlock      []byte
+	tokenBlock      string
 	tokenType       TokenType
 	tokenTag        string
 	tokenAttributes []string
@@ -89,6 +97,10 @@ func getTokenTypeFromFlag(flag TokenizerFlag) TokenType {
 		return TokenTypeClosing
 	case TokenizerFlagSelfClosing:
 		return TokenTypeSelfClosing
+	case TokenizerFlagStyle:
+		return TokenTypeStyle
+	case TokenizerFlagScript:
+		return TokenTypeScript
 	default:
 		return TokenTypeDefault
 	}
@@ -104,6 +116,10 @@ func (t *Tokenizer) Read() {
 		}
 		switch char[0] {
 		case '<':
+			if t.flag == TokenizerFlagStyle || t.flag == TokenizerFlagScript {
+				t.insertToken()
+				t.flag = TokenizerFlagDefault
+			}
 			if t.flag == TokenizerFlagInlineText && !t.inQuotes {
 				t.insertToken()
 			}
@@ -130,39 +146,46 @@ func (t *Tokenizer) Read() {
 			if t.flag == TokenizerFlagOpening && t.lastChar == '/' {
 				t.flag = TokenizerFlagSelfClosing
 			}
-			t.currentTagBlock = append(t.currentTagBlock, char[0])
-			if !t.inQuotes {
+			if t.flag == TokenizerFlagComment && t.lastChar == '-' {
+				t.currentTagBlock = append(t.currentTagBlock, char[0])
 				t.insertToken()
+			} else {
+				t.currentTagBlock = append(t.currentTagBlock, char[0])
+				if !t.inQuotes && t.flag != TokenizerFlagDefault && t.flag != TokenizerFlagInlineText && t.flag != TokenizerFlagComment {
+					t.insertToken()
+				}
 			}
 		case '\'':
-			if t.lastChar == '=' && !t.inQuotes {
+			if t.lastChar == '=' && !t.inQuotes && t.flag == TokenizerFlagOpening {
 				t.inQuotes = true
-			} else if t.inQuotes && t.lastQuote == '\'' {
+			} else if t.inQuotes && t.lastQuote == '\'' && t.flag == TokenizerFlagOpening {
 				t.inQuotes = false
 			}
 			t.currentTagBlock = append(t.currentTagBlock, char[0])
 			t.lastQuote = '\''
 		case '"':
-			if t.lastChar == '=' && !t.inQuotes {
+			if t.lastChar == '=' && !t.inQuotes && t.flag == TokenizerFlagOpening {
 				t.inQuotes = true
-			} else if t.inQuotes && t.lastQuote == '"' {
+			} else if t.inQuotes && t.lastQuote == '"' && t.flag == TokenizerFlagOpening {
 				t.inQuotes = false
 			}
 			t.currentTagBlock = append(t.currentTagBlock, char[0])
 			t.lastQuote = '"'
 		default:
-			if t.flag == TokenizerFlagDefault && t.lastChar == '>' && char[0] != '\n' {
+			if t.flag == TokenizerFlagDefault && t.lastChar == '>' {
 				t.flag = TokenizerFlagInlineText
-				t.currentTagBlock = append(t.currentTagBlock, char[0])
-			} else if t.flag != TokenizerFlagDefault {
+				if !unicode.IsSpace(rune(char[0])) {
+					t.currentTagBlock = append(t.currentTagBlock, char[0])
+				}
+			} else { // if t.flag != TokenizerFlagDefault {
 				t.currentTagBlock = append(t.currentTagBlock, char[0])
 			}
 		}
 		t.lastChar = char[0]
 	}
 	for i, token := range t.tokens {
-		fmt.Printf("%5d - (%s): %s\n", i, token.tokenType, string(token.tokenBlock))
-		if token.tokenType != TokenTypeInlineText {
+		fmt.Printf("%5d - (%s): %s\n", i, token.tokenType, token.tokenBlock)
+		if token.tokenType != TokenTypeInlineText && token.tokenType != TokenTypeStyle && token.tokenType != TokenTypeScript && token.tokenType != TokenTypeComment {
 			fmt.Printf("(Tag): %s\n", token.tokenTag)
 		}
 		if len(token.tokenAttributes) != 0 {
@@ -175,10 +198,10 @@ func (t *Tokenizer) Read() {
 
 func (t *Tokenizer) insertToken() {
 	token := Token{
-		tokenBlock: t.currentTagBlock,
+		tokenBlock: strings.TrimSpace(string(t.currentTagBlock)),
 		tokenType:  getTokenTypeFromFlag(t.flag),
 	}
-	if t.flag != TokenizerFlagInlineText {
+	if t.flag != TokenizerFlagInlineText && t.flag != TokenizerFlagStyle && t.flag != TokenizerFlagScript && t.flag != TokenizerFlagComment {
 		tag, attributes, hasAttributes := strings.Cut(string(t.currentTagBlock), " ")
 		if !hasAttributes {
 			tag = strings.ReplaceAll(tag, "<", "")
@@ -191,9 +214,17 @@ func (t *Tokenizer) insertToken() {
 			token.tokenAttributes = fetchAttributes(attributes)
 		}
 	}
-	t.tokens = append(t.tokens, token)
+	if len(token.tokenBlock) != 0 {
+		t.tokens = append(t.tokens, token)
+	}
 	t.currentTagBlock = []byte{}
-	t.flag = TokenizerFlagDefault
+	if token.tokenTag == "style" && token.tokenType == TokenTypeOpening {
+		t.flag = TokenizerFlagStyle
+	} else if token.tokenTag == "script" && token.tokenType == TokenTypeOpening {
+		t.flag = TokenizerFlagScript
+	} else {
+		t.flag = TokenizerFlagDefault
+	}
 }
 
 func fetchAttributes(attributes string) []string {
@@ -203,13 +234,17 @@ func fetchAttributes(attributes string) []string {
 	output := []string{}
 	var attribute strings.Builder
 	for _, char := range attributes {
-		if unicode.IsSpace(char) {
+		if unicode.IsSpace(char) && len(attribute.String()) == 0 {
 			continue
 		}
-		attribute.WriteRune(char)
 		if char == '>' {
+			if len(attribute.String()) != 0 && attribute.String() != "/" {
+				output = append(output, attribute.String())
+			}
 			break
-		} else if char == '"' && lastChar == '=' && !inQuotes {
+		}
+		attribute.WriteRune(char)
+		if char == '"' && lastChar == '=' && !inQuotes {
 			inQuotes = true
 			lastQuote = '"'
 		} else if char == '\'' && lastChar == '=' && !inQuotes {
@@ -217,6 +252,9 @@ func fetchAttributes(attributes string) []string {
 			lastQuote = '\''
 		} else if inQuotes && (char == '"' && lastQuote == '"') || (char == '\'' && lastQuote == '\'') {
 			inQuotes = false
+			output = append(output, attribute.String())
+			attribute.Reset()
+		} else if char == ' ' && !inQuotes {
 			output = append(output, attribute.String())
 			attribute.Reset()
 		}
